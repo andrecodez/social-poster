@@ -6,6 +6,7 @@ import cliProgress from 'cli-progress';
 import { DatabaseService } from '../services/database.js';
 import { AIContentService } from '../services/aiContentService.js';
 import type { ContentRequest, GeneratedContent } from '../services/aiContentService.js';
+import type { Location } from '../services/brandManager.js';
 
 interface ContentMix {
   name: string;
@@ -20,6 +21,7 @@ interface ScheduledPost {
   contentType: ContentRequest['contentType'];
   scheduledAt: Date;
   platform: string;
+  location: Location;
 }
 
 interface PostPlan {
@@ -80,6 +82,13 @@ class ContentScheduler {
         return;
       }
 
+      // Step 1.5: Location Selection (NEW)
+      const selectedLocations = await this.selectLocations(selectedBrand);
+      if (!selectedLocations || selectedLocations.length === 0) {
+        console.log(chalk.yellow('No locations selected. Exiting...'));
+        return;
+      }
+
       // Step 2: Post Configuration
       const config = await this.getPostConfiguration();
 
@@ -88,10 +97,10 @@ class ContentScheduler {
       const postPlan = this.calculatePostPlan(config.postCount, contentMix);
 
       // Step 4: Display Content Plan
-      this.displayContentPlan(postPlan);
+      this.displayContentPlan(postPlan, selectedLocations, config.postCount);
 
       // Step 5: Generate Content
-      const scheduledPosts = await this.generateContent(selectedBrand, postPlan, config);
+      const scheduledPosts = await this.generateContent(selectedBrand, selectedLocations, postPlan, config);
 
       // Step 6: Preview & Approval
       await this.previewContent(scheduledPosts);
@@ -152,12 +161,56 @@ class ContentScheduler {
     }
   }
 
+  private async selectLocations(brand: any): Promise<Location[]> {
+    const locations: Location[] = Array.isArray(brand.locations) ? brand.locations : [];
+
+    if (locations.length === 0) {
+      console.log(chalk.red('❌ No locations found for this brand. Please add locations first.'));
+      return [];
+    }
+
+    if (locations.length === 1) {
+      console.log(chalk.cyan(`📍 Using location: ${locations[0].name}`));
+      return locations;
+    }
+
+    console.log(chalk.cyan('\n📍 Available Locations:'));
+    locations.forEach((loc, index) => {
+      console.log(`  ${index + 1}. ${loc.name} - ${loc.city}, ${loc.state} - ${loc.phone}`);
+    });
+
+    const choices = [
+      { name: 'All locations', value: 'all' },
+      ...locations.map(loc => ({
+        name: `${loc.name} (${loc.city}, ${loc.state})`,
+        value: loc
+      }))
+    ];
+
+    const { locationChoice } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'locationChoice',
+        message: 'Select locations for content generation:',
+        choices
+      }
+    ]);
+
+    if (locationChoice === 'all') {
+      console.log(chalk.green(`✅ Selected all ${locations.length} locations`));
+      return locations;
+    } else {
+      console.log(chalk.green(`✅ Selected: ${locationChoice.name}`));
+      return [locationChoice];
+    }
+  }
+
   private async getPostConfiguration(): Promise<{ postCount: number; weeks: number }> {
     const answers: any = await inquirer.prompt([
       {
         type: 'number',
         name: 'postCount',
-        message: 'How many posts would you like to schedule?',
+        message: 'How many posts per location would you like to schedule?',
         default: 6,
         validate: (input: number) => {
           if (input < 1 || input > 50) {
@@ -271,24 +324,28 @@ class ContentScheduler {
     };
   }
 
-  private displayContentPlan(plan: PostPlan): void {
+  private displayContentPlan(plan: PostPlan, locations: Location[], postsPerLocation: number): void {
+    const totalPosts = (plan.educational + plan.community + plan.promotional + plan.seasonal) * locations.length;
+    
     console.log(chalk.cyan('\n📋 Content Plan:'));
-    if (plan.educational > 0) console.log(chalk.blue(`   • ${plan.educational} Educational posts`));
-    if (plan.community > 0) console.log(chalk.green(`   • ${plan.community} Community posts`));
-    if (plan.promotional > 0) console.log(chalk.magenta(`   • ${plan.promotional} Promotional posts`));
-    if (plan.seasonal > 0) console.log(chalk.yellow(`   • ${plan.seasonal} Seasonal posts`));
+    console.log(chalk.bold(`   📊 ${postsPerLocation} posts per location × ${locations.length} locations = ${totalPosts} total posts`));
+    console.log();
+    if (plan.educational > 0) console.log(chalk.blue(`   • ${plan.educational} Educational posts per location (${plan.educational * locations.length} total)`));
+    if (plan.community > 0) console.log(chalk.green(`   • ${plan.community} Community posts per location (${plan.community * locations.length} total)`));
+    if (plan.promotional > 0) console.log(chalk.magenta(`   • ${plan.promotional} Promotional posts per location (${plan.promotional * locations.length} total)`));
+    if (plan.seasonal > 0) console.log(chalk.yellow(`   • ${plan.seasonal} Seasonal posts per location (${plan.seasonal * locations.length} total)`));
+    console.log();
+
+    console.log(chalk.cyan('📍 Target Locations:'));
+    locations.forEach(loc => {
+      console.log(chalk.gray(`   • ${loc.name} (${loc.city}, ${loc.state}) - ${loc.phone}`));
+    });
+    console.log(chalk.gray(`   Each location will receive ${postsPerLocation} posts`));
     console.log();
   }
 
-  private async generateContent(brand: any, plan: PostPlan, config: { weeks: number }): Promise<ScheduledPost[]> {
+  private async generateContent(brand: any, locations: Location[], plan: PostPlan, config: { weeks: number }): Promise<ScheduledPost[]> {
     console.log(chalk.cyan('🤖 Generating content... (this may take a minute)\n'));
-
-    const progressBar = new cliProgress.SingleBar({
-      format: chalk.cyan('Progress') + ' |{bar}| {percentage}% | {value}/{total} posts',
-      barCompleteChar: '\u2588',
-      barIncompleteChar: '\u2591',
-      hideCursor: true
-    });
 
     const contentTypes: Array<{ type: ContentRequest['contentType']; count: number }> = [
       { type: 'educational', count: plan.educational },
@@ -297,39 +354,52 @@ class ContentScheduler {
       { type: 'seasonal', count: plan.seasonal }
     ];
 
-    const totalPosts = Object.values(plan).reduce((sum, count) => sum + count, 0);
+    const postsPerLocation = Object.values(plan).reduce((sum, count) => sum + count, 0);
+    const totalPosts = postsPerLocation * locations.length;
     const scheduledPosts: ScheduledPost[] = [];
+    
+    const progressBar = new cliProgress.SingleBar({
+      format: chalk.cyan('Progress') + ' |{bar}| {percentage}% | {value}/{total} posts',
+      barCompleteChar: '\u2588',
+      barIncompleteChar: '\u2591',
+      hideCursor: true
+    });
     
     progressBar.start(totalPosts, 0);
 
     const schedules = this.generateScheduleTimes(totalPosts, config.weeks);
     let scheduleIndex = 0;
 
-    for (const { type, count } of contentTypes) {
-      for (let i = 0; i < count; i++) {
-        try {
-          const content = await this.ai.generateContent({
-            brandId: brand.id,
-            platform: 'facebook', // Default platform
-            contentType: type
-          });
+    // Generate posts for each location
+    for (const location of locations) {
+      for (const { type, count } of contentTypes) {
+        for (let i = 0; i < count; i++) {
+          try {
+            const content = await this.ai.generateContent({
+              brandId: brand.id,
+              locationId: location.id,
+              platform: 'facebook', // Default platform
+              contentType: type
+            });
 
-          scheduledPosts.push({
-            content,
-            contentType: type,
-            scheduledAt: schedules[scheduleIndex],
-            platform: 'facebook'
-          });
+            scheduledPosts.push({
+              content,
+              contentType: type,
+              scheduledAt: schedules[scheduleIndex],
+              platform: 'facebook',
+              location: location
+            });
 
-          scheduleIndex++;
-          progressBar.update(scheduleIndex);
+            scheduleIndex++;
+            progressBar.update(scheduleIndex);
 
-          // Add delay to avoid rate limiting
-          await new Promise(resolve => setTimeout(resolve, 500));
+            // Add delay to avoid rate limiting
+            await new Promise(resolve => setTimeout(resolve, 500));
 
-        } catch (error) {
-          console.error(chalk.red(`\n❌ Failed to generate ${type} post ${i + 1}:`), error);
-          // Continue with next post
+          } catch (error) {
+            console.error(chalk.red(`\n❌ Failed to generate ${type} post ${i + 1} for ${location.name}:`), error);
+            // Continue with next post
+          }
         }
       }
     }
@@ -396,7 +466,7 @@ class ContentScheduler {
         minute: '2-digit'
       });
 
-      console.log(chalk.bold(`${index + 1}. ${emoji} ${typeText} - ${dateText}`));
+      console.log(chalk.bold(`${index + 1}. ${emoji} ${typeText} - ${dateText} (for ${post.location.name})`));
       
       // Show preview of caption (first 100 characters)
       const preview = post.content.caption.length > 100 
@@ -452,7 +522,8 @@ class ContentScheduler {
             metadata: JSON.stringify({
               contentType: post.contentType,
               originalContent: post.content,
-              seoKeywords: post.content.seoKeywords
+              seoKeywords: post.content.seoKeywords,
+              location: post.location.name
             })
           }
         });
@@ -482,7 +553,7 @@ class ContentScheduler {
       })} at ${firstPost.scheduledAt.toLocaleTimeString('en-US', {
         hour: 'numeric',
         minute: '2-digit'
-      })}`));
+      })} (for ${firstPost.location.name})`));
     }
     
     if (lastPost) {
@@ -493,7 +564,7 @@ class ContentScheduler {
       })} at ${lastPost.scheduledAt.toLocaleTimeString('en-US', {
         hour: 'numeric',
         minute: '2-digit'
-      })}`));
+      })} (for ${lastPost.location.name})`));
     }
     
     console.log(chalk.green('💾 All posts saved to database with \'scheduled\' status'));
