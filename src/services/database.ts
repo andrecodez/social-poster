@@ -340,6 +340,36 @@ export class DatabaseService {
   }
 
   /**
+   * Get recently processed posts for duplicate prevention
+   */
+  async getRecentlyProcessedPosts(platform: string, minutesBack: number): Promise<PostWithAccount[]> {
+    try {
+      const cutoffTime = new Date(Date.now() - minutesBack * 60 * 1000);
+      
+      const posts = await prisma.post.findMany({
+        where: {
+          platform: platform,
+          status: 'posted',
+          postedAt: {
+            gte: cutoffTime,
+          },
+        },
+        include: {
+          account: true,
+        },
+        orderBy: {
+          postedAt: 'desc',
+        },
+      });
+      
+      return posts;
+    } catch (error) {
+      console.error(`❌ Error fetching recent posts for platform ${platform}:`, error);
+      return [];
+    }
+  }
+
+  /**
    * Close database connection
    */
   async disconnect(): Promise<void> {
