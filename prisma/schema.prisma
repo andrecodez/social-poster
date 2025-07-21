@@ -1,0 +1,65 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Account {
+  id       Int    @id @default(autoincrement())
+  name     String
+  platform String
+  apiKey   String
+  posts    Post[]
+
+  @@map("accounts")
+}
+
+model Brand {
+  id              String   @id @default(cuid())
+  name            String   @unique
+  industry        String
+  description     String
+  targetAudience  String
+  uniqueValueProp String
+  
+  // Store complex nested data as JSON
+  locations       Json     // Array of location objects
+  postTemplate    Json     // Post template structure
+  contentTopics   Json     // Array of content topics
+  brandVoice      Json     // Brand voice object
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  posts           Post[]   // Relationship to Post model
+
+  @@map("brands")
+}
+
+model Post {
+  id          Int      @id @default(autoincrement())
+  accountId   Int
+  brandId     String?
+  platform    String?
+  content     String
+  imageUrl    String?
+  status      String   @default("scheduled") // scheduled, posted, failed, retrying
+  scheduledAt DateTime
+  postedAt    DateTime?
+  metadata    String?  // JSON field for storing additional data
+  retryCount  Int      @default(0)
+  lastError   String?
+  processedAt DateTime?
+  nextRetryAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  brand       Brand?   @relation(fields: [brandId], references: [id], onDelete: SetNull)
+
+  @@map("posts")
+}

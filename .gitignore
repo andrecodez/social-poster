@@ -1,0 +1,30 @@
+# Node dependencies
+node_modules
+
+# Environment variables
+.env
+
+# Build output
+dist
+build
+
+# Database files
+dev.db
+*.db-journal
+
+# Prisma generated files (optional if you don't want cached client builds)
+src/generated/prisma
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# IDE-specific files
+.vscode/
+.idea/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
